@@ -1,8 +1,15 @@
 /**
  * PayPal Invoicing API v2 Client for Sandbox
- * Stack: Next.js (TypeScript), PayPal sandbox only, USD only.
+ * Stack: Next.js (TypeScript), Tailwind, better-sqlite3, zod. PayPal sandbox only, USD only.
  * All PayPal calls go through src/lib/paypal.ts.
  */
+
+import {
+  upsertInvoice,
+  updateInvoiceStatusInDb,
+  getInvoiceByPayPalId,
+  InvoiceRecord,
+} from "./db";
 
 const PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com";
 
@@ -74,7 +81,7 @@ export interface BillingAddress {
   adminArea2?: string;
   adminArea1?: string;
   postalCode?: string;
-  countryCode?: string; // e.g. "US"
+  countryCode?: string;
 }
 
 export interface InvoiceItemInput {
@@ -115,6 +122,7 @@ export interface PayPalInvoiceResponse {
     };
     metadata?: {
       create_time?: string;
+      last_update_time?: string;
       recipient_view_url?: string;
       invoicer_view_url?: string;
     };
@@ -160,6 +168,21 @@ export interface PayPalInvoiceResponse {
   due_amount?: {
     currency_code: string;
     value: string;
+  };
+  payments?: {
+    paid_amount?: {
+      currency_code: string;
+      value: string;
+    };
+    transactions?: Array<{
+      type?: string;
+      payment_id?: string;
+      payment_date?: string;
+      amount?: {
+        currency_code: string;
+        value: string;
+      };
+    }>;
   };
   links?: Array<{
     href: string;
@@ -370,4 +393,83 @@ export async function getInvoice(
 
   const data = await response.json();
   return data as PayPalInvoiceResponse;
+}
+
+/**
+ * Status sync function:
+ * Fetches an invoice from PayPal (GET /v2/invoicing/invoices/{id})
+ * and updates status, paid amount, due amount (and full record) in the SQLite database.
+ * Always uses PayPal's real response, never a guess.
+ */
+export async function syncInvoiceStatus(
+  paypalInvoiceId: string
+): Promise<InvoiceRecord> {
+  const invoiceData = await getInvoice(paypalInvoiceId);
+
+  // Status directly from PayPal
+  const status = invoiceData.status;
+
+  // Total invoice amount
+  const amount = invoiceData.amount?.value || "0.00";
+
+  // Due amount directly from PayPal
+  let dueAmount = "0.00";
+  if (invoiceData.due_amount?.value !== undefined) {
+    dueAmount = invoiceData.due_amount.value;
+  } else if (status === "PAID") {
+    dueAmount = "0.00";
+  } else {
+    dueAmount = amount;
+  }
+
+  // Paid amount directly from PayPal's real response
+  let paidAmount = "0.00";
+  const payments = invoiceData.payments;
+  if (payments?.paid_amount?.value !== undefined) {
+    paidAmount = payments.paid_amount.value;
+  } else if (Array.isArray(payments?.transactions) && payments.transactions.length > 0) {
+    const sum = payments.transactions.reduce((acc, tx) => {
+      const val = parseFloat(tx.amount?.value || "0");
+      return acc + (isNaN(val) ? 0 : val);
+    }, 0);
+    paidAmount = sum.toFixed(2);
+  } else if (status === "PAID") {
+    paidAmount = amount;
+  } else if (invoiceData.amount?.value && invoiceData.due_amount?.value) {
+    const total = parseFloat(invoiceData.amount.value);
+    const due = parseFloat(invoiceData.due_amount.value);
+    if (!isNaN(total) && !isNaN(due) && total >= due) {
+      paidAmount = (total - due).toFixed(2);
+    }
+  }
+
+  // Recipient view URL from metadata or links
+  const recipientViewUrl =
+    invoiceData.detail?.metadata?.recipient_view_url ||
+    invoiceData.links?.find((l) => l.rel === "payer-view")?.href ||
+    null;
+
+  // Other fields
+  const invoiceNumber = invoiceData.detail?.invoice_number || null;
+  const dueDate = invoiceData.detail?.payment_term?.due_date || null;
+  const recipientEmail =
+    invoiceData.primary_recipients?.[0]?.billing_info?.email_address || null;
+  const createdAt =
+    invoiceData.detail?.metadata?.create_time || new Date().toISOString();
+
+  // Upsert in database
+  const record = upsertInvoice({
+    paypal_invoice_id: invoiceData.id,
+    invoice_number: invoiceNumber,
+    amount,
+    due_amount: dueAmount,
+    due_date: dueDate,
+    status,
+    paid_amount: paidAmount,
+    recipient_email: recipientEmail,
+    recipient_view_url: recipientViewUrl,
+    created_at: createdAt,
+  });
+
+  return record;
 }
