@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Chaser - Stage 1 PayPal Integration Test",
-  description: "PayPal Invoicing API sandbox test for Chaser",
+  title: "Chaser - Deal and Invoice Tracker",
+  description: "Extract client deals and track PayPal sandbox invoices.",
 };
 
 export default function RootLayout({
