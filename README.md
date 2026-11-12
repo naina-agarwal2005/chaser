@@ -27,6 +27,10 @@ columns when the app starts.
 3. Use **Refresh All Statuses** on the dashboard to fetch current invoice
    statuses from PayPal. **Simulate +7 Days (Overdue)** advances only the app's
    overdue calculation; it does not change PayPal or stored invoice status.
+4. On an overdue invoice, open **Draft AI Reminder**, edit the generated
+   subject and message, then approve to send it through PayPal. Reminder tone
+   escalates from friendly to firm to final based on previously sent reminders.
+   Use **Pay / View** to open an invoice's PayPal payment page.
 
 Invoices are always sent to `SANDBOX_PERSONAL_EMAIL`; the client details entered
 in the deal are retained separately.

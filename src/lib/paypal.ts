@@ -366,6 +366,39 @@ export async function sendInvoice(
 }
 
 /**
+ * Sends a custom invoice reminder using the PayPal Invoicing v2 remind endpoint.
+ */
+export async function sendInvoiceReminder(
+  invoiceId: string,
+  input: { subject: string; note: string }
+): Promise<void> {
+  const token = await getPayPalAccessToken();
+  const response = await fetch(
+    `${PAYPAL_API_BASE}/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/remind`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        subject: input.subject,
+        note: input.note,
+        send_to_recipient: true,
+        send_to_invoicer: true,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(
+      `Failed to send reminder for invoice ${invoiceId} (${response.status} ${response.statusText}): ${errorBody}`
+    );
+  }
+}
+
+/**
  * Fetches an invoice by ID via GET /v2/invoicing/invoices/{id}
  */
 export async function getInvoice(

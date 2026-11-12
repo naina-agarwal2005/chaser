@@ -11,6 +11,7 @@ type DashboardInvoice = {
   paid_amount: string;
   due_date: string | null;
   status: string;
+  recipient_view_url: string | null;
   paypal_invoice_id: string;
 };
 
@@ -18,6 +19,7 @@ type DashboardDeal = {
   id: number;
   client_name: string | null;
   client_email: string | null;
+  source_text: string;
   total_amount: string;
   created_at: string;
   status: "UNPAID" | "PAID" | "PARTIALLY_PAID";
@@ -29,6 +31,14 @@ type DashboardData = {
   deals: DashboardDeal[];
   clockOffsetDays: number;
   today: string;
+};
+
+type ReminderDraft = {
+  reminderId: number;
+  tone: "friendly" | "firm" | "final";
+  daysOverdue: number;
+  subject: string;
+  body: string;
 };
 
 function money(value: string | number): string {
@@ -59,6 +69,15 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [clockUpdating, setClockUpdating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = useState<{
+    id: number;
+    label: string;
+  } | null>(null);
+  const [reminderDraft, setReminderDraft] = useState<ReminderDraft | null>(null);
+  const [draftingReminder, setDraftingReminder] = useState(false);
+  const [sendingReminder, setSendingReminder] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
   const loadDashboard = useCallback(async () => {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -139,8 +158,90 @@ export default function Home() {
     Boolean(
       invoice.due_date &&
         invoice.due_date < (dashboard?.today ?? "") &&
-      !["PAID", "CANCELLED", "REFUNDED", "DRAFT"].includes(invoice.status)
+      Number(invoice.due_amount) > 0 &&
+      !["PAID", "MARKED_AS_PAID", "CANCELLED", "REFUNDED", "DRAFT"].includes(
+        invoice.status
+      )
     );
+
+  const openReminderDraft = async (invoice: DashboardInvoice) => {
+    setSelectedInvoice({
+      id: invoice.id,
+      label: `${invoice.kind ?? "invoice"} ${money(invoice.due_amount)}`,
+    });
+    setReminderDraft(null);
+    setReminderError(null);
+    setCopyMessage(null);
+    setDraftingReminder(true);
+    try {
+      const response = await fetch("/api/reminders/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invoiceId: invoice.id }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+      throw new Error(result.error ?? "Could not draft the reminder.");
+      }
+      setReminderDraft({
+      reminderId: result.reminderId,
+      tone: result.tone,
+      daysOverdue: result.daysOverdue,
+      subject: result.subject,
+      body: result.body,
+      });
+    } catch (draftError) {
+      setReminderError(
+      draftError instanceof Error ? draftError.message : "Could not draft the reminder."
+      );
+    } finally {
+      setDraftingReminder(false);
+    }
+  };
+
+  const sendReminder = async () => {
+    if (!selectedInvoice || !reminderDraft) return;
+    setSendingReminder(true);
+    setReminderError(null);
+    try {
+      const response = await fetch("/api/reminders/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invoiceId: selectedInvoice.id,
+        reminderId: reminderDraft.reminderId,
+        subject: reminderDraft.subject,
+        body: reminderDraft.body,
+      }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+      throw new Error(result.error ?? "Could not send reminder via PayPal.");
+      }
+      setSelectedInvoice(null);
+      setReminderDraft(null);
+      setNotice("Reminder sent to the client via PayPal.");
+      await loadDashboard();
+    } catch (sendError) {
+      setReminderError(
+      sendError instanceof Error ? sendError.message : "Could not send reminder via PayPal."
+      );
+    } finally {
+      setSendingReminder(false);
+    }
+  };
+
+  const copyReminder = async () => {
+    if (!reminderDraft) return;
+    try {
+      await navigator.clipboard.writeText(
+      `Subject: ${reminderDraft.subject}\n\n${reminderDraft.body}`
+      );
+      setCopyMessage("Subject and message copied.");
+    } catch {
+      setCopyMessage("Clipboard access is unavailable in this browser.");
+    }
+  };
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -292,17 +393,37 @@ export default function Home() {
                               ) : (
                                 deal.invoices.map((invoice) => (
                                   <div key={invoice.id} className="text-xs">
-                                    <span className="font-medium capitalize text-slate-700">
-                                      {invoice.kind ?? "invoice"}
-                                    </span>
-                                    <span className="ml-1 text-slate-500">
-                                      {money(invoice.amount)}
-                                    </span>
-                                    {isOverdue(invoice) && (
-                                      <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">
-                                        OVERDUE
-                                      </span>
-                                    )}
+                                      <div className="flex flex-wrap items-center gap-y-1">
+                                        <span className="font-medium capitalize text-slate-700">
+                                          {invoice.kind ?? "invoice"}
+                                        </span>
+                                        <span className="ml-1 text-slate-500">
+                                          {money(invoice.amount)}
+                                        </span>
+                                        {invoice.recipient_view_url && (
+                                          <a
+                                            href={invoice.recipient_view_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="ml-2 inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline"
+                                          >
+                                            Pay / View ↗
+                                          </a>
+                                        )}
+                                      </div>
+                                      {isOverdue(invoice) && (
+                                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                                          <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">
+                                            OVERDUE
+                                          </span>
+                                          <button
+                                            onClick={() => openReminderDraft(invoice)}
+                                            className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 font-semibold text-blue-700 hover:bg-blue-100"
+                                          >
+                                            ✉ Draft AI Reminder
+                                          </button>
+                                        </div>
+                                      )}
                                     <p className="mt-0.5 text-slate-400">
                                       {invoice.due_date ? `Due ${invoice.due_date}` : invoice.status}
                                       {invoice.due_date ? ` · ${invoice.status}` : ""}
@@ -325,6 +446,126 @@ export default function Home() {
           </>
         ) : null}
       </div>
+      {selectedInvoice && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !sendingReminder) {
+              setSelectedInvoice(null);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reminder-title"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl sm:p-6"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="reminder-title" className="text-lg font-bold text-slate-900">
+                  AI overdue reminder
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {selectedInvoice.label}
+                  {reminderDraft ? ` · ${reminderDraft.daysOverdue} days overdue` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedInvoice(null)}
+                disabled={sendingReminder}
+                aria-label="Close reminder dialog"
+                className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+              >
+                ✕
+              </button>
+            </div>
+
+            {draftingReminder && (
+              <p className="mt-6 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
+                Drafting a reminder…
+              </p>
+            )}
+            {reminderError && (
+              <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                {reminderError}
+              </p>
+            )}
+            {reminderDraft && (
+              <>
+                <div className="mt-5">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Escalation tone
+                  </span>
+                  <p
+                    className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
+                      reminderDraft.tone === "friendly"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : reminderDraft.tone === "firm"
+                          ? "bg-amber-100 text-amber-900"
+                          : "bg-rose-100 text-rose-800"
+                    }`}
+                  >
+                    {reminderDraft.tone}
+                  </p>
+                </div>
+                <label className="mt-5 block text-sm font-semibold text-slate-700">
+                  Subject
+                  <input
+                    value={reminderDraft.subject}
+                    onChange={(event) =>
+                      setReminderDraft({ ...reminderDraft, subject: event.target.value })
+                    }
+                    maxLength={120}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                <label className="mt-4 block text-sm font-semibold text-slate-700">
+                  Message
+                  <textarea
+                    value={reminderDraft.body}
+                    onChange={(event) =>
+                      setReminderDraft({ ...reminderDraft, body: event.target.value })
+                    }
+                    maxLength={4000}
+                    rows={8}
+                    className="mt-1 w-full resize-y rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                {copyMessage && (
+                  <p aria-live="polite" className="mt-3 text-xs text-slate-500">
+                    {copyMessage}
+                  </p>
+                )}
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={copyReminder}
+                    disabled={sendingReminder}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Copy Text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendReminder}
+                    disabled={
+                      sendingReminder ||
+                      !reminderDraft.subject.trim() ||
+                      !reminderDraft.body.trim()
+                    }
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {sendingReminder ? "Sending…" : "Approve & Send via PayPal"}
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   );
 }

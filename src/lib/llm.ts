@@ -4,7 +4,20 @@
  * Uses @google/genai with GEMINI_API_KEY.
  */
 import { GoogleGenAI, Type } from "@google/genai";
+import { z } from "zod";
 import { ExtractedDealSchema, ExtractedDeal, createDefaultDeal } from "./schemas";
+
+const ReminderDraftSchema = z.object({
+  subject: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(4000),
+});
+
+export type ReminderTone = "friendly" | "firm" | "final";
+
+export interface ReminderDraft {
+  subject: string;
+  body: string;
+}
 
 export interface ExtractionResult {
   success: boolean;
@@ -166,4 +179,67 @@ RULES:
       error_message: message,
     };
   }
+}
+
+export async function draftOverdueReminder(input: {
+  sourceText: string;
+  amount: string;
+  daysOverdue: number;
+  tone: ReminderTone;
+}): Promise<ReminderDraft> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not set. Add it to the server environment to draft reminders.");
+  }
+
+  const prompt = `Write a concise, professional invoice payment reminder based on these inputs.
+Return only JSON matching the requested schema.
+
+Escalation tone: ${input.tone}
+Outstanding amount: USD ${input.amount}
+Days overdue: ${input.daysOverdue}
+Original client conversation:
+${input.sourceText || "(No source conversation was saved.)"}
+
+Keep the message respectful and factual. Do not invent dates, invoice numbers, late fees, payment methods, or legal consequences. Do not claim a payment is overdue by more days than specified.`;
+
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: "gemini-3.8-flash",
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    config: {
+      systemInstruction:
+        "You draft payment reminders for a freelancer invoicing tool. Never include a greeting name unless it appears in the source conversation. Return a JSON object with subject and body only.",
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          subject: { type: Type.STRING },
+          body: { type: Type.STRING },
+        },
+        required: ["subject", "body"],
+      },
+    },
+  });
+
+  if (!response.text) {
+    throw new Error("Gemini returned an empty reminder draft.");
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(stripCodeFences(response.text));
+  } catch {
+    throw new Error("Gemini returned an invalid reminder draft.");
+  }
+
+  const parsed = ReminderDraftSchema.safeParse(value);
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Gemini reminder draft did not match the required format: ${details}`);
+  }
+
+  return parsed.data;
 }

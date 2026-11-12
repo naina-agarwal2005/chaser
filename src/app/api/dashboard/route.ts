@@ -33,6 +33,7 @@ export async function GET() {
         id: deal.id,
         client_name: deal.client_name,
         client_email: deal.client_email,
+        source_text: deal.source_text,
         total_amount: deal.total_amount,
         created_at: deal.created_at,
         status,
@@ -44,6 +45,7 @@ export async function GET() {
           paid_amount: invoice.paid_amount,
           due_date: invoice.due_date,
           status: invoice.status,
+          recipient_view_url: invoice.recipient_view_url,
           paypal_invoice_id: invoice.paypal_invoice_id,
         })),
       };

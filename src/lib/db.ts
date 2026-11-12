@@ -29,6 +29,16 @@ export interface DealRecord {
   created_at: string;
 }
 
+export interface ReminderRecord {
+  id: number;
+  invoice_id: number;
+  tone: "friendly" | "firm" | "final";
+  subject: string;
+  body: string;
+  status: "draft" | "sent";
+  sent_at: string | null;
+}
+
 const dbPath = path.join(process.cwd(), "chaser.db");
 
 // Use global singleton in development to prevent duplicate connections during hot-reloads
@@ -80,6 +90,19 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    tone TEXT NOT NULL CHECK (tone IN ('friendly', 'firm', 'final')),
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'sent')),
+    sent_at TEXT,
+    FOREIGN KEY (invoice_id) REFERENCES invoices(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS reminders_invoice_status_idx ON reminders(invoice_id, status);
 `);
 
 function addInvoiceColumnIfMissing(name: string, sql: string): void {
@@ -207,6 +230,52 @@ export function getClockOffsetDays(): number {
     .get() as { value: string } | undefined;
   const offset = Number(row?.value ?? 0);
   return Number.isInteger(offset) ? offset : 0;
+}
+
+export function getSentReminderCount(invoiceId: number): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS count FROM reminders WHERE invoice_id = ? AND status = 'sent'")
+    .get(invoiceId) as { count: number };
+  return row.count;
+}
+
+export function createReminderDraft(input: {
+  invoice_id: number;
+  tone: ReminderRecord["tone"];
+  subject: string;
+  body: string;
+}): number {
+  const result = db
+    .prepare(
+      `INSERT INTO reminders (invoice_id, tone, subject, body, status)
+       VALUES (@invoice_id, @tone, @subject, @body, 'draft')`
+    )
+    .run(input);
+  return Number(result.lastInsertRowid);
+}
+
+export function updateReminderDraft(input: {
+  id: number;
+  invoice_id: number;
+  subject: string;
+  body: string;
+}): boolean {
+  const result = db
+    .prepare(
+      `UPDATE reminders SET subject = ?, body = ?
+       WHERE id = ? AND invoice_id = ? AND status = 'draft'`
+    )
+    .run(input.subject, input.body, input.id, input.invoice_id);
+  return result.changes === 1;
+}
+
+export function markReminderSent(reminderId: number): void {
+  const result = db
+    .prepare("UPDATE reminders SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'draft'")
+    .run(new Date().toISOString(), reminderId);
+  if (result.changes !== 1) {
+    throw new Error(`Could not mark reminder ${reminderId} as sent.`);
+  }
 }
 
 export function setClockOffsetDays(days: number): void {
