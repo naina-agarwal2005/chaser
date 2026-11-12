@@ -237,7 +237,8 @@ export async function POST(request: Request) {
         success: false,
         error: error instanceof Error ? error.message : "Invoice creation failed.",
         ...(dealId === null ? {} : { dealId: String(dealId), createdInvoices }),
-        partial: dealId !== null,
+        dealSaved: dealId !== null,
+        partial: createdInvoices.length > 0,
       },
       { status: 502 }
     );

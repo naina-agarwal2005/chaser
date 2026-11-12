@@ -9,13 +9,22 @@ import { ExtractedDeal, LineItem } from "@/lib/schemas";
 const SAMPLES = [
   {
     label: "Branding Project",
-    text: `Hey! Just wanted to confirm everything we talked about on the call.
+    text: `Hi! Confirming the brand identity project for my startup, Luminos.
 
-So I need a full brand identity package for my startup "Luminos" – that's logo design, brand guidelines doc, and 3 social media templates.
+Client name: Priya Mehta
+Client email: priya.mehta@luminos.io
 
-For pricing, we agreed on $2,400 total. I'll pay 50% upfront ($1,200) and the rest when you send over the final files. I'd like the deposit invoice by next Friday and the final stuff within 3 weeks after that.
+There is one billable line item:
+- Description: Complete brand identity package (logo design, brand guidelines document, and 3 social media templates)
+- Quantity: 1
+- Unit price: $2,400 USD
+- Project total: $2,400 USD
 
-My email is priya.mehta@luminos.io. Let's do this!`,
+Payment terms:
+- Deposit: 50% of the total, exactly $1,200 USD, due in 2 days.
+- Balance: the remaining $1,200 USD, due in 21 days.
+
+Please send the deposit invoice first and the balance invoice for the remaining amount. Thanks!`,
   },
   {
     label: "Website Redesign",
@@ -205,10 +214,12 @@ export default function NewDealPage() {
       });
       const result = await response.json();
       if (!response.ok || !result.success) {
-        const partialNote = result.partial
-          ? " Some invoices may already have been created or sent; check the dashboard before retrying."
-          : "";
-        throw new Error(`${result.error ?? "Could not create invoices."}${partialNote}`);
+        const statusNote = result.partial
+          ? " One or more invoices were created; check the dashboard before trying again."
+          : result.dealSaved
+            ? " The deal was saved, but no invoices were recorded locally. PayPal's response may not confirm whether it processed the request, so check PayPal Sandbox before retrying."
+            : "";
+        throw new Error(`${result.error ?? "Could not create invoices."}${statusNote}`);
       }
       router.push("/");
     } catch (error) {
